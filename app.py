@@ -1115,6 +1115,15 @@ async def _startup_event():
                 logger.debug(f"Warmup ping skipped: {e}")
 
         _startup_tasks.append(asyncio.create_task(_warmup_endpoints()))
+
+        async def _warmup_emoji_cache():
+            try:
+                from routes.emoji_routes import prewarm_common_emoji
+                await prewarm_common_emoji()
+            except Exception as e:
+                logger.warning(f"Emoji cache warmup failed (non-critical): {type(e).__name__}: {e}")
+
+        _startup_tasks.append(asyncio.create_task(_warmup_emoji_cache()))
     else:
         logger.info("Startup warmups disabled (set ODYSSEUS_STARTUP_WARMUPS=1 to enable)")
 

@@ -678,3 +678,48 @@ class AuthManager:
         if authenticated:
             result["privileges"] = self.get_privileges(username)
         return result
+
+
+# ── Process-wide cached singleton ──────────────────────────────────────────
+#
+# Several hot paths (tool security, task-action policy, note/builtin-actions
+# null-owner gates) construct a fresh `AuthManager()` on every call. Each
+# construction does 2 disk reads + JSON parses + 3 mutation-lock allocations +
+# migration scans in `__init__` (`_load`, `_load_sessions`,
+# `_migrate_single_user`, `_drop_reserved_loaded_users`,
+# `_migrate_legacy_admin_role`). `app.py` already keeps one long-lived
+# instance (module-level `auth_manager`, wired to `app.state.auth_manager`)
+# used by all request middleware; these helper paths were creating throwaway
+# copies instead of reusing it. Cache a single lazy instance here so they stop
+# re-reading auth.json / sessions.json on every call.
+#
+# The cached instance is deliberately independent of `app.py`'s — it is
+# created lazily on first use and owns the default auth path, so it also
+# serves code that runs outside the FastAPI app (agent loop, scheduler,
+# background tasks) without reaching into `app.state`. It never mutates
+# config itself (callers only read `is_configured` / `is_admin` /
+# `get_privileges`, backed by the in-memory `_config` loaded once), so a
+# shared instance is safe under concurrency. Config *writes* still go through
+# their own short-lived instances in the auth routes, which keep
+# `app.state.auth_manager` fresh; reads of a marginally stale singleton are
+# harmless for the boolean gates it serves here.
+
+_auth_singleton: Optional["AuthManager"] = None
+_auth_singleton_lock = threading.Lock()
+
+
+def get_auth_singleton() -> "AuthManager":
+    """Return the process-wide cached AuthManager, creating it once."""
+    global _auth_singleton
+    if _auth_singleton is None:
+        with _auth_singleton_lock:
+            if _auth_singleton is None:
+                _auth_singleton = AuthManager()
+    return _auth_singleton
+
+
+def reset_auth_singleton() -> None:
+    """Drop the cached singleton (tests, or after auth_path config changes)."""
+    global _auth_singleton
+    with _auth_singleton_lock:
+        _auth_singleton = None

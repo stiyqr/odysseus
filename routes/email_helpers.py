@@ -39,6 +39,22 @@ from src.secret_storage import decrypt as _decrypt
 
 logger = logging.getLogger(__name__)
 
+# _get_email_config() is polled every 30-60s by background loops (urgency
+# scan, unread-state, auto-summarize) for every enabled account. On a
+# workstation with no Email Account configured that logged "SMTP/IMAP not
+# configured" on every single poll forever. Log each (scope, kind) transition
+# into "not configured" once instead of every poll; a later config change
+# that actually fixes it clears the entry so a *new* misconfiguration still
+# warns.
+_email_config_warned: set[tuple[str, str]] = set()
+
+
+def _warn_email_not_configured_once(scope: str, kind: str, message: str) -> None:
+    key = (scope, kind)
+    if key not in _email_config_warned:
+        _email_config_warned.add(key)
+        logger.warning(message)
+
 
 class EmailNotConfiguredError(RuntimeError):
     """Raised when an IMAP operation is attempted on an account that has no
@@ -1086,10 +1102,15 @@ def _get_email_config(account_id: str | None = None, owner: str = "") -> dict:
                     "display_name": row.display_name or "",
                 }
                 is_oauth = bool(cfg.get("oauth_provider"))
+                scope = f"account:{row.id}"
                 if not is_oauth and not (cfg["smtp_host"] and cfg["smtp_user"] and cfg["smtp_password"]):
-                    logger.warning(f"SMTP not configured for account {row.name!r}")
+                    _warn_email_not_configured_once(scope, "smtp", f"SMTP not configured for account {row.name!r}")
+                else:
+                    _email_config_warned.discard((scope, "smtp"))
                 if not is_oauth and not (cfg["imap_host"] and cfg["imap_user"] and cfg["imap_password"]):
-                    logger.warning(f"IMAP not configured for account {row.name!r}")
+                    _warn_email_not_configured_once(scope, "imap", f"IMAP not configured for account {row.name!r}")
+                else:
+                    _email_config_warned.discard((scope, "imap"))
                 return cfg
         finally:
             db.close()
@@ -1117,9 +1138,13 @@ def _get_email_config(account_id: str | None = None, owner: str = "") -> dict:
         "from_address": settings.get("email_from", os.environ.get("EMAIL_FROM", "")),
     }
     if not (cfg["smtp_host"] and cfg["smtp_user"] and cfg["smtp_password"]):
-        logger.warning("SMTP not configured — add an Email Account in Settings or set env vars")
+        _warn_email_not_configured_once("legacy", "smtp", "SMTP not configured — add an Email Account in Settings or set env vars")
+    else:
+        _email_config_warned.discard(("legacy", "smtp"))
     if not (cfg["imap_host"] and cfg["imap_user"] and cfg["imap_password"]):
-        logger.warning("IMAP not configured — add an Email Account in Settings or set env vars")
+        _warn_email_not_configured_once("legacy", "imap", "IMAP not configured — add an Email Account in Settings or set env vars")
+    else:
+        _email_config_warned.discard(("legacy", "imap"))
     return cfg
 
 

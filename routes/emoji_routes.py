@@ -10,6 +10,7 @@
 #   - it works offline once an emoji has been seen once.
 # Unknown/unreachable codepoints return a transparent SVG (not 404), so the CSS
 # mask shows nothing rather than a solid currentColor box.
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -66,6 +67,65 @@ def _is_safe_svg(content: bytes) -> bool:
     return True
 
 
+async def _fetch_and_cache(code: str, client: httpx.AsyncClient | None = None) -> bool:
+    """Fetch one OpenMoji black SVG into the disk cache. Best-effort: never
+    raises, returns whether a usable glyph is now cached."""
+    fp = _CACHE_DIR / f"{code}.svg"
+    try:
+        if client is not None:
+            r = await client.get(f"{_OPENMOJI_BASE}/{code.upper()}.svg")
+        else:
+            async with httpx.AsyncClient(timeout=8.0) as one_shot:
+                r = await one_shot.get(f"{_OPENMOJI_BASE}/{code.upper()}.svg")
+        if r.status_code == 200 and _is_safe_svg(r.content):
+            try:
+                fp.write_bytes(r.content)
+            except Exception:
+                pass  # cache write is best-effort
+            return True
+    except Exception as e:
+        logger.warning("emoji fetch %s failed: %s", code, e)
+    return False
+
+
+# Common chat emoji (lowercase codepoints, FE0F dropped, '-' joined). Only
+# used by the opt-in startup warmup (ODYSSEUS_STARTUP_WARMUPS=1) — see
+# prewarm_common_emoji() below — so the first render of a frequent emoji is a
+# cache hit instead of a CDN round trip.
+COMMON_EMOJI_CODES = [
+    "1f600", "1f601", "1f602", "1f603", "1f604", "1f606", "1f609", "1f60a",
+    "1f60d", "1f60e", "1f610", "1f614", "1f61b", "1f61d", "1f622", "1f62d",
+    "1f631", "1f680", "1f38a", "1f389", "1f44d", "1f44e", "1f4a1", "1f4aa",
+    "1f4ac", "1f4ad", "1f4af", "1f495", "1f496", "1f499", "1f49b", "1f49c",
+    "1f4c1", "1f4c4", "1f4dd", "1f50d", "1f514", "1f525", "1f5e3", "1f6e0",
+    "1f7e1", "1f7e2", "1f916", "1f9e0", "2194", "23f3", "26a0", "26d4",
+    "2705", "2709", "2728", "274c", "2764", "2b1c", "2b50", "1f534", "1f3a8",
+]
+_PREWARM_CONCURRENCY = 8
+
+
+async def prewarm_common_emoji() -> int:
+    """Fetch every not-yet-cached COMMON_EMOJI_CODES entry, bounded to
+    `_PREWARM_CONCURRENCY` concurrent requests over one shared client.
+    Returns the number newly cached. Safe to call repeatedly (skips whatever
+    is already on disk)."""
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    missing = [c for c in COMMON_EMOJI_CODES if not (_CACHE_DIR / f"{c}.svg").exists()]
+    if not missing:
+        return 0
+    sem = asyncio.Semaphore(_PREWARM_CONCURRENCY)
+
+    async def _bounded(code: str, client: httpx.AsyncClient) -> bool:
+        async with sem:
+            return await _fetch_and_cache(code, client)
+
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        results = await asyncio.gather(*(_bounded(c, client) for c in missing))
+    fetched = sum(1 for ok in results if ok)
+    logger.info("emoji pre-warm: cached %d/%d common emoji", fetched, len(missing))
+    return fetched
+
+
 def setup_emoji_routes() -> APIRouter:
     router = APIRouter(prefix="/api/emoji", tags=["emoji"])
 
@@ -90,20 +150,10 @@ def setup_emoji_routes() -> APIRouter:
                 logger.warning("emoji cache read %s failed: %s", code, e)
             return _blank()
 
-        # First time we've seen this emoji — fetch the OpenMoji black SVG + cache
-        # it. OpenMoji filenames are the codepoints uppercased.
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                r = await client.get(f"{_OPENMOJI_BASE}/{code.upper()}.svg")
-            if r.status_code == 200 and _is_safe_svg(r.content):
-                try:
-                    fp.write_bytes(r.content)
-                except Exception:
-                    pass  # cache write is best-effort
-                return Response(r.content, media_type="image/svg+xml", headers=_SVG_HEADERS)
-        except Exception as e:
-            logger.warning("emoji fetch %s failed: %s", code, e)
-
+        # Cache miss: never block the request on the CDN. Serve the blank SVG
+        # instantly and fetch the real glyph in the background, so the next
+        # request for this emoji is a cache hit with zero render lag.
+        asyncio.create_task(_fetch_and_cache(code))
         return _blank()
 
     return router

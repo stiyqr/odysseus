@@ -3314,6 +3314,11 @@ function initializeEventListeners() {
       if (!sessionModule) return;
       if (_closeCompareIfActive()) return;
       _deactivateIncognito();
+      // Clear any leftover pending (never-sent) chat first, otherwise
+      // _createDirectChatFromPreferredModel() below reuses its model/endpoint
+      // instead of picking this new chat's own — the new chat silently
+      // "inherits" whatever model the previous unsent pending chat had.
+      if (sessionModule.clearPendingChat) sessionModule.clearPendingChat();
       // Clear character on new chat
       if (presetsModule && presetsModule.deactivateCharacter) presetsModule.deactivateCharacter();
       // Clear research mode if active

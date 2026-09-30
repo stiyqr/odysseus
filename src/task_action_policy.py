@@ -31,8 +31,8 @@ def owner_has_admin_task_privileges(owner: str | None) -> bool:
             pass
 
     try:
-        from core.auth import AuthManager
-        auth = AuthManager()
+        from core.auth import get_auth_singleton
+        auth = get_auth_singleton()
         if not auth.is_configured:
             return True
         if not owner:
@@ -40,8 +40,5 @@ def owner_has_admin_task_privileges(owner: str | None) -> bool:
         return bool(auth.is_admin(owner))
     except Exception:
         pass
-
-    if not owner:
-        return False
 
     return False

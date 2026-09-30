@@ -13,6 +13,17 @@ logger = logging.getLogger(__name__)
 
 _client = None
 
+# Operator kill-switch: set ODYSSEUS_DISABLE_CHROMADB=1 (or true/yes/on) to
+# skip the vector store entirely on machines that don't run a ChromaDB
+# service. Every ChromaDB-backed subsystem (tool RAG index, personal-doc
+# VectorRAG, memory vectors) funnels through get_chroma_client(), so this one
+# flag disables them all. It fails fast *before* the TCP probe, so a
+# workstation without ChromaDB doesn't pay a connect timeout on every startup
+# and every retry.
+DISABLE_CHROMADB = os.getenv("ODYSSEUS_DISABLE_CHROMADB", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
 # A short connect probe so an unreachable ChromaDB fails fast instead of
 # blocking on the OS connection timeout (~30-60s, WinError 10060 on Windows),
 # which otherwise stalls app startup. Tunable via CHROMADB_CONNECT_TIMEOUT.
@@ -37,6 +48,12 @@ def get_chroma_client():
     global _client
     if _client is not None:
         return _client
+
+    if DISABLE_CHROMADB:
+        raise RuntimeError(
+            "ChromaDB is disabled via ODYSSEUS_DISABLE_CHROMADB. "
+            "Remove the flag (or set it to 0) to re-enable the vector store."
+        )
 
     try:
         import chromadb

@@ -2371,6 +2371,13 @@ export function preMaterializePendingSession() {
   }, 250);
 }
 
+/** Discard a not-yet-materialized pending chat (e.g. when starting a genuinely
+ * new chat) so its model/endpoint can't be reused for the next one. */
+export function clearPendingChat() {
+  _pendingChat = null;
+  _pendingMaterializePromise = null;
+}
+
 export function hasPendingChat() { return !!_pendingChat; }
 export function getPendingChat() { return _pendingChat; }
 // Getters for external access
@@ -3659,6 +3666,7 @@ const sessionModule = {
   createDirectChat,
   materializePendingSession,
   preMaterializePendingSession,
+  clearPendingChat,
   hasPendingChat,
   getPendingChat,
   getCurrentSessionId,

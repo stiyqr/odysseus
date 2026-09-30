@@ -607,6 +607,15 @@ def get_tool_index() -> Optional[ToolIndex]:
     if _tool_index is not None and _tool_index.healthy:
         return _tool_index
 
+    # ChromaDB is deliberately off on this install (ODYSSEUS_DISABLE_CHROMADB) —
+    # that will never change without a restart, so retrying every 30s forever
+    # is pure waste (a ToolIndex() construction attempt + a warning log on
+    # every agent round that needs tool selection). Fail once, silently, from
+    # here on. reset_tool_index() re-arms this if the flag is ever cleared.
+    from src.chroma_client import DISABLE_CHROMADB
+    if DISABLE_CHROMADB:
+        return None
+
     now = time.monotonic()
     if now - _last_attempt < _RETRY_INTERVAL:
         return None

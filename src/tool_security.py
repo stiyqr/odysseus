@@ -253,9 +253,9 @@ def owner_is_admin_or_single_user(owner: Optional[str]) -> bool:
         if _auth_disabled():
             return True
 
-        from core.auth import AuthManager
+        from core.auth import get_auth_singleton
 
-        auth = AuthManager()
+        auth = get_auth_singleton()
         if not auth.is_configured:
             return False
         return bool(owner and auth.is_admin(owner))
